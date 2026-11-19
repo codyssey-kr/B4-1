@@ -1,15 +1,14 @@
 # 평가 대비
 
-미션 평가 체크리스트 19개 항목의 상태, 시연 방법, 답변을 정리했다.
+체크리스트 19개 중 1~8번은 실행 증거, 9~19번은 설명과 장애 대응 질문이다. [미션 원문](https://github.com/parkhojeong/BX-X/blob/main/B4-1.md) · [평가 체크리스트](https://github.com/parkhojeong/BX-X/blob/main/checklists/B4-1-checklist.md)
 
 ## 평가 직전 준비
 
 Mac이 잠들면 cron도 멈추므로 평가가 끝날 때까지 깨워 둔다. 프로젝트 루트에서 실행한다.
 
 ```sh
-caffeinate -d &
 ./scripts/start-b4-1.sh
-./scripts/verify-b4-1.sh
+caffeinate -i ./scripts/verify-b4-1.sh
 docker --context orbstack exec -it b4-1 bash
 ```
 
@@ -43,10 +42,11 @@ sshd -T | grep -E '^(port|permitrootlogin) '
 ss -tulnp | grep sshd
 ```
 
-Mac 터미널에서 Root 접속이 거부되는지 확인한다.
+실제 로그인 비교 결과는 [수행 내역서 4.1](../required/B4-1-수행내역서.md#41-ssh-포트-변경과-root-원격-접속-차단)에 있다. 같은 시험 키가 두 계정에 등록된 동안 Mac에서 아래 두 명령으로 비교했다. 시험 후 키는 삭제했다.
 
 ```sh
-ssh -p 20022 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@127.0.0.1
+ssh -p 20022 agent-admin@127.0.0.1 id -un
+ssh -p 20022 root@127.0.0.1 id -un
 ```
 
 ### 2. 방화벽
@@ -78,11 +78,10 @@ ps -o user,pid,args -C agent-app-linux
 ```sh
 su - agent-admin -c "$M"; echo "exit: $?"                     # 정상: 0
 su - agent-admin -c "AGENT_PORT=15999 $M"; echo "exit: $?"    # 포트 비정상: 1
-pkill -INT -x agent-app-linux; sleep 3
-su - agent-admin -c "$M"; echo "exit: $?"                     # 프로세스 비정상: 1
+su - agent-admin -c "APP_PROCESS=no-such-proc $M"; echo "exit: $?"  # 대상 프로세스 없음: 1
 ```
 
-시연 후 Mac 터미널에서 `./scripts/start-b4-1.sh`로 앱을 다시 실행한다.
+마지막 명령은 존재하지 않는 이름을 점검 대상으로 지정한다. 앱을 실제로 종료했을 때의 결과도 수행 내역서 4.6에 있다.
 
 ### 6~7. 로그와 cron
 
@@ -94,7 +93,7 @@ wc -l "$L"; sleep 65; wc -l "$L"
 
 ### 8. 로그 용량 관리
 
-`monitor.sh`의 `rotate_log` 함수를 보여주고, Mac 터미널에서 자동 점검의 마지막 항목을 확인한다.
+`monitor.sh`의 `rotate_log` 함수를 보여주고, Mac 터미널에서 자동 점검의 로그 교체 항목을 확인한다.
 
 ```sh
 ./scripts/verify-b4-1.sh | grep '10MB'
@@ -105,18 +104,26 @@ wc -l "$L"; sleep 65; wc -l "$L"
 평상시 CPU는 임계값보다 낮으므로 부하를 주어 보여준다.
 
 ```sh
-for i in $(seq "$(nproc)"); do yes >/dev/null & done
-su - agent-admin -c "$M"; echo "exit: $?"
-pkill -x yes
+(
+  workers=()
+  trap 'for pid in "${workers[@]}"; do kill "$pid" 2>/dev/null; done' EXIT
+  cores=$(nproc)
+  for ((i = 0; i < cores; i++)); do
+    yes >/dev/null &
+    workers+=("$!")
+  done
+  su - agent-admin -c "$M"
+  echo "exit: $?"
+)
 ```
 
 ## 항목 2. 구현 설명
 
 ### 9. 프로세스와 포트 확인 명령과 선택 이유
 
-프로세스는 `pgrep -x agent-app-linux`로 이름이 정확히 일치하는 것만 찾는다. 리눅스 프로세스 이름은 15자로 잘려서 잘린 이름을 사용했다. `pgrep -f`는 명령줄 전체를 검색해 앱을 실행한 셸까지 찾을 수 있어 쓰지 않았고, `ps -o stat=`로 좀비 프로세스를 제외했다.
+프로세스는 `pgrep -x agent-app-linux`로 이름이 정확히 일치하는 것만 찾는다. 이 환경에서 comm에 보이는 이름은 최대 15바이트다. 일치하는 비좀비가 여러 개면 그중 가장 큰 PID를 기록한다. `pgrep -f`는 명령줄 전체를 검색해 앱을 실행한 셸까지 찾을 수 있어 쓰지 않았고, `ps -o stat=`로 좀비 프로세스를 제외했다.
 
-포트는 `ss -H -ltn "sport = :15034"`로 확인한다. `-l`은 LISTEN, `-t`는 TCP, `-n`은 숫자 표시이고 출력이 있으면 정상이다. `netstat`은 별도 패키지가 필요하고 `ss`는 Ubuntu에 기본 포함되어 있다.
+포트는 `ss -H -ltn "sport = :15034"`로 확인한다. `-l`은 LISTEN, `-t`는 TCP, `-n`은 숫자 표시이고 출력이 있으면 해당 포트에서 대기 중인 TCP 소켓이 있다는 뜻이다. 매분 점검은 프로세스 존재와 포트 상태를 각각 확인한다. 자동 검증에서는 `ss -ltnp`로 소켓 소유 프로세스까지 대조한다. 이 컨테이너의 `ss`는 설치한 `iproute2` 패키지에 들어 있다.
 
 ### 10. CPU, MEM, DISK 추출과 로그 포맷
 
@@ -131,7 +138,7 @@ pkill -x yes
 
 ### 12. 용량 기반 로그 관리
 
-스크립트 방식으로 구현했다. 새 줄을 기록하기 전에 크기를 확인해 10MB를 넘게 되면 `.8`→`.9`, ..., `monitor.log`→`.1` 순서로 이름을 바꾸고 가장 오래된 `.9`를 삭제한다. 현재 파일과 백업 9개로 총 10개다. logrotate는 보통 하루 주기로 실행되지만 스크립트는 매분 실행 시 바로 검사한다. 수동 실행과 cron이 겹치는 경우는 `flock`으로 보호했다.
+스크립트 방식으로 구현했다. 새 줄을 기록하기 전에 크기를 확인해 10MB를 넘게 되면 `.8`→`.9`, ..., `monitor.log`→`.1` 순서로 이름을 바꾼다. 이동할 공간을 확보하려고 기존 `.9`를 먼저 삭제한다. 현재 파일을 포함해 최대 10개다. logrotate는 보통 하루 주기로 실행되지만 스크립트는 매분 실행 시 바로 검사한다. 수동 실행과 cron이 겹치는 경우는 `flock`으로 보호했다.
 
 ## 항목 3. 보안과 운영
 
@@ -157,7 +164,7 @@ pkill -x yes
 
 | 항목 | 변경 내용 |
 |---|---|
-| 프로세스 | `APP_PROCESS=nginx`, master 프로세스 확인 |
+| 프로세스 | `APP_PROCESS=nginx`로 이름을 확인한다. master PID가 필요하면 설정된 PID 파일을 대조한다. |
 | 포트 | `AGENT_PORT`를 80 또는 443으로 변경 |
 | 로그 | `/var/log/nginx/`의 access, error 로그와 교체 정책 확인 |
 | 임계값 | 평상시 트래픽을 측정해 CPU, 메모리 기준 재설정 |
@@ -181,7 +188,7 @@ pkill -x yes
 
 1. `df -h`, `du -sh /var/log/*`로 원인 파일을 찾는다.
 2. 오래된 로그를 압축하거나 다른 저장소로 옮긴다.
-3. 사용 중인 파일은 삭제 대신 `: > 파일`로 비운다. 삭제해도 프로세스가 파일을 열고 있으면 공간이 회수되지 않으며, `lsof +L1`로 확인할 수 있다.
+3. 열린 로그는 서비스의 로그 재열기 절차로 교체한다. 이미 삭제한 파일이 공간을 차지하면 `lsof +L1`로 해당 프로세스를 찾아 파일을 다시 열도록 한다.
 4. 급증을 일으키는 오류나 디버그 로그를 멈춘다.
 
 **중기 대응**

@@ -19,7 +19,7 @@ service cron start >/dev/null
 ufw --force enable >/dev/null
 
 if [[ -z "$(ss -H -ltn 'sport = :15034')" ]]; then
-    su - agent-admin -c 'umask 027; cd "$AGENT_HOME" && nohup setsid ./agent-app-linux-arm64 > "$AGENT_HOME/app.out" 2>&1 < /dev/null &'
+    su - agent-admin -c 'umask 027; cd "$AGENT_HOME" && AGENT_KEY_PATH="${AGENT_KEY_PATH%/t_secret.key}" nohup setsid ./agent-app-linux-arm64 > "$AGENT_HOME/app.out" 2>&1 < /dev/null &'
 fi
 
 for _ in $(seq 1 15); do
