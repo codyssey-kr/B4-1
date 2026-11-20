@@ -20,7 +20,6 @@ AGENT_LOG_DIR="${AGENT_LOG_DIR:-/var/log/agent-app}"
 APP_PROCESS="${APP_PROCESS:-agent-app-linux}"
 
 LOG_FILE="$AGENT_LOG_DIR/monitor.log"
-LOCK_FILE="$AGENT_LOG_DIR/.monitor.lock"
 
 CPU_LIMIT=20
 MEM_LIMIT=10
@@ -180,10 +179,6 @@ append_log() {
     local timestamp line
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
     line="[$timestamp] PID:$pid CPU:${cpu}% MEM:${mem}% DISK_USED:${disk}%"
-
-    # cron과 수동 실행이 겹치면 한쪽이 교체와 기록을 마칠 때까지 기다린다.
-    exec 9>>"$LOCK_FILE" || fail "Cannot open lock file: $LOCK_FILE"
-    flock -w 10 9 || fail "Cannot acquire log lock: $LOCK_FILE"
 
     # 줄 끝의 개행도 1바이트를 차지한다.
     rotate_log "$((${#line} + 1))" || fail "Log rotation failed: $LOG_FILE"

@@ -71,9 +71,6 @@ archive_old_logs() {
 
 main() {
     check_directories
-    # monitor.sh와 같은 잠금을 사용해 로그를 기록하거나 교체하는 동안 기다린다.
-    exec 9>>"$log_dir/.monitor.lock"
-    flock -w 10 9
     archive_old_logs
     find "$archive_dir" -maxdepth 1 -type f -name '*.gz' ! -newermt '30 days ago' -delete
 }
